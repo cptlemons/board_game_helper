@@ -1,6 +1,8 @@
 package collections
 
 import (
+	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io/ioutil"
@@ -8,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kylelemons/godebug/pretty"
@@ -52,8 +55,8 @@ type Poll struct {
 
 type GameXML struct {
 	Names       []GameName `xml:"item>name"`
-	PrimaryName string
-	Description string `xml:"item>description"`
+	PrimaryName string     `xml:"-"`
+	Description string     `xml:"item>description"`
 	MinPlayers  struct {
 		Num int `xml:"value,attr"`
 	} `xml:"item>minplayers"`
@@ -64,16 +67,28 @@ type GameXML struct {
 	FetchTime time.Time `xml:"-"`
 }
 
+type GameJSON struct {
+	Score   float64 `json:"average,string"`
+	Weight  float64 `json:"avgweight,string"`
+	BScore  float64 `json:"baverage,string"`
+	Ratings int     `json:"usersrated,string"`
+}
+
 type Game struct {
-	Best      ([]int)
-	Rec       ([]int)
-	FetchTime time.Time `xml:"-"`
+	Best       []int
+	Rec        []int
+	MinPlayers int
+	MaxPlayers int
+	Score      float64
+	Weight     float64
+	BScore     float64
+	Ratings    int
+	FetchTime  time.Time `xml:"-"`
 }
 
 func getCollection(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
 	bggName := r.FormValue("bggName")
-	var raw []byte
 	collURL := fmt.Sprintf("https://www.boardgamegeek.com/xmlapi2/collection?username=%s&excludesubtype=boardgameexpansion&own=1", bggName)
 
 retry:
@@ -87,11 +102,11 @@ retry:
 		goto retry
 	}
 	// TODO: BGG gives 200 on invalid username, write check to let user know they provided invalid name and to try again
-	js, err := ioutil.ReadAll(resp.Body)
+	raw, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		log.Fatalf("Failed to read body: %s", err)
 	}
-	raw = js
+
 	w.Header().Set("Content-Type", "text/plain")
 	// fmt.Fprintf(w, "%s\n", raw)
 
@@ -137,23 +152,22 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
 	gameID := r.FormValue("gameID")
 	gameXMLURL := fmt.Sprintf("https://www.boardgamegeek.com/xmlapi2/thing?id=%s", gameID)
-	//gameHTML := fmt.Sprintf("https://boardgamegeek.com/boardgame/%s", gameID)
+	gameHTMLURL := fmt.Sprintf("https://boardgamegeek.com/boardgame/%s", gameID)
 
-	resp, err := urlfetch.Client(ctx).Get(gameXMLURL)
+	xmlresp, err := urlfetch.Client(ctx).Get(gameXMLURL)
 	if err != nil {
 		log.Fatalf("Failed to download url: %s", err)
 	}
 
-	js, err := ioutil.ReadAll(resp.Body)
+	xmlraw, err := ioutil.ReadAll(xmlresp.Body)
 	if err != nil {
 		log.Fatalf("Failed to read body: %s", err)
 	}
-	var raw []byte
-	raw = js
+
 	w.Header().Set("Content-Type", "text/plain")
 
 	var gameXML GameXML
-	if err := xml.Unmarshal(raw, &gameXML); err != nil {
+	if err := xml.Unmarshal(xmlraw, &gameXML); err != nil {
 		log.Fatalf("Failed to unmarshal XML: %s", err)
 	}
 	gameXML.FetchTime = time.Now()
@@ -163,12 +177,6 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	fmt.Fprintln(w, gameXML.PrimaryName)
-	fmt.Fprintln(w, gameXML.Description)
-	fmt.Fprintln(w, gameXML.MinPlayers)
-	fmt.Fprintln(w, gameXML.MaxPlayers)
-	pretty.Fprint(w, gameXML.Polls)
-	fmt.Fprintln(w)
 
 	var playerPoll *Poll
 	for _, poll := range gameXML.Polls {
@@ -176,21 +184,25 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 		case "suggested_numplayers":
 			playerPoll = poll
 			/*case "suggested_playerage":
-				_agePoll = &poll
+				agePoll = poll
 			case "language_dependence":
-				_langPoll = &poll
+				langPoll = poll
 			*/
 		}
 	}
-	var bestAt, recAt ([]int)
+	var bestAt, recAt []int
 	if playerPoll != nil {
 		for _, playerCount := range playerPoll.Results {
 			bestVotes, recVotes, nayVotes := playerCount.Votes[0].Num, playerCount.Votes[1].Num, playerCount.Votes[2].Num
-			numPlayers, err := strconv.Atoi(playerCount.NumPlayers)
+
+			numPlayers, err := strconv.Atoi(strings.TrimSuffix(playerCount.NumPlayers, "+"))
 			if err != nil {
-				numPlayers, err = strconv.Atoi(playerCount.NumPlayers[:len(playerCount.NumPlayers)-1])
-				numPlayers += 1
+				log.Fatalf("Failed to convert numPlayers string to int: %s", err)
 			}
+			if strings.HasSuffix(playerCount.NumPlayers, "+") {
+				numPlayers++
+			}
+
 			fmt.Fprintln(w, bestVotes, recVotes, nayVotes, numPlayers)
 			if bestVotes+recVotes > nayVotes {
 				if bestVotes > recVotes {
@@ -201,14 +213,54 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	pretty.Fprint(w, bestAt, recAt)
-	var game Game
-	game.Best = bestAt
-	game.Rec = recAt
-	game.FetchTime = time.Now()
+
+	htmlresp, err := urlfetch.Client(ctx).Get(gameHTMLURL)
+	if err != nil {
+		log.Fatalf("Failed to download url: %s", err)
+	}
+
+	htmlraw, err := ioutil.ReadAll(htmlresp.Body)
+	if err != nil {
+		log.Fatalf("Failed to read body: %s", err)
+	}
+
+	needle := []byte("GEEK.geekitemPreload")
+	start := bytes.Index(htmlraw, needle)
+	if start < 0 {
+		log.Fatalf("Couldn't find GEEK.geekitemPreload in htmlraw")
+	}
+	start += len(needle)
+
+	preload := htmlraw[start:]
+	brace := bytes.IndexByte(preload, '{')
+	if brace < 0 {
+		log.Fatalf("Couldn't find the first brace in preloaded data")
+	}
+
+	var data struct{ Item struct{ Stats GameJSON } }
+	if err := json.NewDecoder(bytes.NewReader(preload[brace:])).Decode(&data); err != nil {
+		log.Fatalf("Failed to parse json")
+	}
+
+	gameJSON := data.Item.Stats
+
+	pretty.Fprint(w, gameJSON)
+
+	game := &Game{
+		Best:       bestAt,
+		Rec:        recAt,
+		MinPlayers: gameXML.MinPlayers.Num,
+		MaxPlayers: gameXML.MaxPlayers.Num,
+		Score:      gameJSON.Score,
+		Weight:     gameJSON.Weight,
+		BScore:     gameJSON.BScore,
+		Ratings:    gameJSON.Ratings,
+		FetchTime:  time.Now(),
+	}
+
 	key := datastore.NewKey(ctx, "Games", gameID, 0, nil)
 
-	if _, err := datastore.Put(ctx, key, &game); err != nil {
+	if _, err := datastore.Put(ctx, key, game); err != nil {
 		log.Fatalf("Failed to store user collection: %s", err)
 	}
 
