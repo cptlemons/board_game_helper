@@ -128,7 +128,7 @@ retry:
 			"gameID": {fmt.Sprint(coll.Items[i].ObjectID)},
 		}))
 	}
-	if _, err := taskqueue.AddMulti(ctx, gameTasks, ""); err != nil {
+	if _, err := taskqueue.AddMulti(ctx, gameTasks, "my-push-queue"); err != nil {
 		log.Fatalf("Failed to queue game fetch tasks: %s", err)
 	}
 }
