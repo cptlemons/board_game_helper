@@ -75,6 +75,7 @@ type GameJSON struct {
 }
 
 type Game struct {
+	Name       string
 	Best       []int
 	Rec        []int
 	MinPlayers int
@@ -247,6 +248,7 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 	pretty.Fprint(w, gameJSON)
 
 	game := &Game{
+		Name:       gameXML.PrimaryName,
 		Best:       bestAt,
 		Rec:        recAt,
 		MinPlayers: gameXML.MinPlayers.Num,
