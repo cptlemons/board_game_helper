@@ -22,8 +22,11 @@ import (
 )
 
 func init() {
+	http.HandleFunc("/", home)
 	http.HandleFunc("/list", getCollection)
 	http.HandleFunc("/loadgame", loadGame)
+	http.HandleFunc("/watchprogress", watchProgress)
+	http.HandleFunc("/suggestedgames", suggestedGames)
 }
 
 type CollectionItem struct {
@@ -87,6 +90,23 @@ type Game struct {
 	FetchTime  time.Time `xml:"-"`
 }
 
+func home(w http.ResponseWriter, r *http.Request) {
+	page := `<form action="/list" method="post">
+    <div>
+        BGG Username: <input type="text" name="bggName"><br>
+        <input type="submit" value="Submit">
+    </div>
+</form>
+<form action="/loadgame" method="post">
+    <div>
+        Game ID: <input type="text" name="gameID"><br>
+        <input type="submit" value="Submit">
+    </div>
+</form>`
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprintf(w, page)
+}
+
 func getCollection(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
 	bggName := r.FormValue("bggName")
@@ -126,7 +146,7 @@ retry:
 
 	var gameKeys []*datastore.Key
 	for _, item := range coll.Items {
-		gameKeys = append(gameKeys, datastore.NewKey(ctx, "Game", "", int64(item.ObjectID), nil))
+		gameKeys = append(gameKeys, datastore.NewKey(ctx, "Game", strconv.Itoa(item.ObjectID), 0, nil))
 	}
 
 	earliestGame := time.Now().Add(-7 * 24 * time.Hour)
@@ -147,6 +167,8 @@ retry:
 	if _, err := taskqueue.AddMulti(ctx, gameTasks, "my-push-queue"); err != nil {
 		log.Fatalf("Failed to queue game fetch tasks: %s", err)
 	}
+
+	fmt.Sprintf("Added %d games to the queue.", len(gameTasks))
 }
 
 func loadGame(w http.ResponseWriter, r *http.Request) {
@@ -157,19 +179,19 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 
 	xmlresp, err := urlfetch.Client(ctx).Get(gameXMLURL)
 	if err != nil {
-		log.Fatalf("Failed to download url: %s", err)
+		log.Fatalf("Failed to fetch xml game info: %s", err)
 	}
 
 	xmlraw, err := ioutil.ReadAll(xmlresp.Body)
 	if err != nil {
-		log.Fatalf("Failed to read body: %s", err)
+		log.Fatalf("Failed to read xml body: %s", err)
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
 
 	var gameXML GameXML
 	if err := xml.Unmarshal(xmlraw, &gameXML); err != nil {
-		log.Fatalf("Failed to unmarshal XML: %s", err)
+		log.Fatalf("Failed to unmarshal XML: %s", err) // TODO: Write check to ensure body has content (BGG will sometimes return w/o content)
 	}
 	gameXML.FetchTime = time.Now()
 	for _, name := range gameXML.Names {
@@ -204,7 +226,6 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 				numPlayers++
 			}
 
-			fmt.Fprintln(w, bestVotes, recVotes, nayVotes, numPlayers)
 			if bestVotes+recVotes > nayVotes {
 				if bestVotes > recVotes {
 					bestAt = append(bestAt, numPlayers)
@@ -245,8 +266,6 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 
 	gameJSON := data.Item.Stats
 
-	pretty.Fprint(w, gameJSON)
-
 	game := &Game{
 		Name:       gameXML.PrimaryName,
 		Best:       bestAt,
@@ -265,5 +284,56 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 	if _, err := datastore.Put(ctx, key, game); err != nil {
 		log.Fatalf("Failed to store user collection: %s", err)
 	}
+	pretty.Fprint(w, game)
 
+}
+
+func watchProgress(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+	queue, err := taskqueue.QueueStats(ctx, []string{"my-push-queue"})
+	if err != nil {
+		log.Fatalf("Failed to fetch queue stats: %s", err)
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	pretty.Fprint(w, queue)
+	page := `<form action="/watchprogress" method="post">
+    <div>
+        <input type="submit" value="Refresh"><br>
+    </div>
+</form>
+<form action="/" method="post">
+    <div>
+        <input type="submit" value="Home"><br>
+    </div>
+</form>`
+
+	fmt.Fprintf(w, page)
+}
+
+func suggestedGames(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+	numPlayers := r.FormValue("numPlayers")
+	bggName := r.FormValue("bggName")
+
+	collKey := datastore.NewKey(ctx, "Collection", bggName, 0, nil)
+	var coll Collection
+	if err := datastore.Get(ctx, collKey, &coll); err != nil {
+		log.Fatalf("Failed to pull collection: %s", err)
+	}
+
+	var gameKeys []*datastore.Key
+
+	for game := range coll.Items {
+		gameKeys = append(gameKeys, datastore.NewKey(ctx, "Games", strconv.Itoa(game), 0, nil))
+	}
+
+	var games = make([]*Game, len(coll.Items))
+	err := datastore.GetMulti(ctx, gameKeys, games)
+	if err != nil {
+		log.Fatalf("Games retried: %s", games)
+		log.Fatalf("Failed to pull games: %s", err)
+	}
+	pretty.Fprint(w, games)
+	_ = numPlayers
 }
