@@ -1,5 +1,5 @@
 queue:
-- name: my-push-queue
+- name: game-fetch
   rate: 10/m
   max_concurrent_requests: 3
   retry_parameters:

@@ -114,17 +114,19 @@ func home(w http.ResponseWriter, r *http.Request) {
 }
 
 func getCollection(w http.ResponseWriter, r *http.Request) {
+	// TODO: Make wrapper
 	ctx := appengine.NewContext(r)
 	bggName := r.FormValue("bggName")
 	collURL := fmt.Sprintf("https://www.boardgamegeek.com/xmlapi2/collection?username=%s&excludesubtype=boardgameexpansion&own=1", bggName)
 
-retry:
+retry: //TODO: change this to be a taskqueue push
 	resp, err := urlfetch.Client(ctx).Get(collURL)
 	if err != nil {
 		log.Errorf(ctx, "Failed to download bgg collection: %s", err)
 		http.Error(w, "An error occurred. Try again.", http.StatusInternalServerError)
 		return
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusAccepted {
 		log.Infof(ctx, "BGG request accepted, waiting for body")
 		time.Sleep(10 * time.Second)
@@ -174,7 +176,7 @@ retry:
 			"gameID": {fmt.Sprint(coll.Items[i].ObjectID)},
 		}))
 	}
-	if _, err := taskqueue.AddMulti(ctx, gameTasks, "my-push-queue"); err != nil {
+	if _, err := taskqueue.AddMulti(ctx, gameTasks, "game-fetch"); err != nil {
 		log.Errorf(ctx, "Failed to queue game fetch tasks: %s", err)
 		http.Error(w, "An error occurred. Try again.", http.StatusInternalServerError)
 		return
@@ -190,26 +192,28 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 	gameXMLURL := fmt.Sprintf("https://www.boardgamegeek.com/xmlapi2/thing?id=%s", gameID)
 	gameHTMLURL := fmt.Sprintf("https://boardgamegeek.com/boardgame/%s", gameID)
 
-	xmlresp, err := urlfetch.Client(ctx).Get(gameXMLURL)
+	xmlResp, err := urlfetch.Client(ctx).Get(gameXMLURL)
 	if err != nil {
 		log.Errorf(ctx, "Failed to fetch xml game info: %s", err)
-	}
-
-	if xmlresp.StatusCode != http.StatusOK {
-		log.Errorf(ctx, xmlresp.Status)
-		http.Error(w, xmlresp.Status, xmlresp.StatusCode)
 		return
 	}
-	xmlraw, err := ioutil.ReadAll(xmlresp.Body)
+	defer xmlResp.Body.Close()
+
+	if xmlResp.StatusCode != http.StatusOK {
+		log.Errorf(ctx, xmlResp.Status)
+		http.Error(w, xmlResp.Status, xmlResp.StatusCode)
+		return
+	}
+	xmlRaw, err := ioutil.ReadAll(xmlResp.Body)
 	if err != nil {
 		log.Errorf(ctx, "Failed to read xml body: %s", err)
+		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain")
-
 	var gameXML GameXML
-	if err := xml.Unmarshal(xmlraw, &gameXML); err != nil {
-		log.Errorf(ctx, "Failed to unmarshal XML: %s", err) // TODO: Write check to ensure body has content (BGG will sometimes return w/o content)
+	if err := xml.Unmarshal(xmlRaw, &gameXML); err != nil {
+		log.Errorf(ctx, "Failed to unmarshal XML: %s", err)
+		return
 	}
 	gameXML.FetchTime = time.Now()
 	for _, name := range gameXML.Names {
@@ -219,8 +223,9 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if gameXML.PrimaryName == "" {
-		log.Errorf(ctx, "Issue retrieving gameXML info %v", xmlresp)
+		log.Errorf(ctx, "Issue retrieving gameXML info %v", xmlResp)
 		http.Error(w, "Unable to retrive game info from BGG API", http.StatusInternalServerError)
+		return
 	}
 
 	var playerPoll *Poll
@@ -235,61 +240,72 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 			*/
 		}
 	}
+	// TODO: check votes and defer to min/max players if <n
 	var bestAt, recAt []int
 	if playerPoll != nil {
 		for _, playerCount := range playerPoll.Results {
 			bestVotes, recVotes, nayVotes := playerCount.Votes[0].Num, playerCount.Votes[1].Num, playerCount.Votes[2].Num
 
+			// BGG can return n+ which is taken here as 1 more than the max number of players on the box
 			numPlayers, err := strconv.Atoi(strings.TrimSuffix(playerCount.NumPlayers, "+"))
 			if err != nil {
 				log.Errorf(ctx, "Failed to convert numPlayers string to int: %s", err)
+				return
 			}
 			if strings.HasSuffix(playerCount.NumPlayers, "+") {
 				numPlayers++
 			}
 
-			if bestVotes+recVotes > nayVotes {
-				if bestVotes > recVotes {
-					bestAt = append(bestAt, numPlayers)
-				} else {
-					recAt = append(recAt, numPlayers)
-				}
+			if bestVotes+recVotes <= nayVotes {
+				continue
+			}
+			if bestVotes > recVotes {
+				bestAt = append(bestAt, numPlayers)
+			} else {
+				recAt = append(recAt, numPlayers)
 			}
 		}
 	}
 
-	htmlresp, err := urlfetch.Client(ctx).Get(gameHTMLURL)
+	htmlResp, err := urlfetch.Client(ctx).Get(gameHTMLURL)
 	if err != nil {
 		log.Errorf(ctx, "Failed to download url: %s", err)
+		return
 	}
+	defer htmlResp.Body.Close()
 
-	if htmlresp.StatusCode != http.StatusOK {
-		log.Errorf(ctx, htmlresp.Status)
-		http.Error(w, htmlresp.Status, htmlresp.StatusCode)
+	if htmlResp.StatusCode != http.StatusOK {
+		log.Errorf(ctx, htmlResp.Status)
+		http.Error(w, htmlResp.Status, htmlResp.StatusCode)
 		return
 	}
 
-	htmlraw, err := ioutil.ReadAll(htmlresp.Body)
+	htmlRaw, err := ioutil.ReadAll(htmlResp.Body)
 	if err != nil {
 		log.Errorf(ctx, "Failed to read body: %s", err)
+		return
 	}
 
 	needle := []byte("GEEK.geekitemPreload")
-	start := bytes.Index(htmlraw, needle)
+	start := bytes.Index(htmlRaw, needle)
 	if start < 0 {
-		log.Errorf(ctx, "Couldn't find GEEK.geekitemPreload in htmlraw")
+		log.Errorf(ctx, "Couldn't find GEEK.geekitemPreload in htmlRaw")
+		return
 	}
 	start += len(needle)
 
-	preload := htmlraw[start:]
+	preload := htmlRaw[start:]
 	brace := bytes.IndexByte(preload, '{')
 	if brace < 0 {
 		log.Errorf(ctx, "Couldn't find the first brace in preloaded data")
+		return
 	}
+	preload = preload[brace:]
 
 	var data struct{ Item struct{ Stats GameJSON } }
-	if err := json.NewDecoder(bytes.NewReader(preload[brace:])).Decode(&data); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(preload)).Decode(&data); err != nil {
 		log.Errorf(ctx, "Failed to parse json")
+		return
 	}
 
 	gameJSON := data.Item.Stats
@@ -311,16 +327,18 @@ func loadGame(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := datastore.Put(ctx, key, game); err != nil {
 		log.Errorf(ctx, "Failed to store user collection: %s", err)
+		return
 	}
-	pretty.Fprint(w, game)
+	log.Infof(ctx, "%s", pretty.Sprint(game))
 
 }
 
 func watchProgress(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
-	queue, err := taskqueue.QueueStats(ctx, []string{"my-push-queue"})
+	queue, err := taskqueue.QueueStats(ctx, []string{"game-fetch"})
 	if err != nil {
 		log.Errorf(ctx, "Failed to fetch queue stats: %s", err)
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/html")
@@ -357,6 +375,7 @@ func suggestedGames(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Errorf(ctx, "Failed to query games: %s", err)
 		http.Error(w, "Internal error, please try again", http.StatusInternalServerError)
+		return
 	}
 
 	var rec []Game
@@ -364,6 +383,7 @@ func suggestedGames(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Errorf(ctx, "Failed to query games: %s", err)
 		http.Error(w, "Internal error, please try again", http.StatusInternalServerError)
+		return
 	}
 
 	pretty.Fprint(w, best)
