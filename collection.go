@@ -406,14 +406,14 @@ func suggestedGames(w http.ResponseWriter, r *http.Request) {
 	var recGames []*Game
 
 	for _, game := range games {
-		for num := range game.Rec {
+		for _, num := range game.Rec {
 			if num == numPlayers {
 				recGames = append(recGames, game)
 			} else if num > numPlayers {
 				break
 			}
 		}
-		for num := range game.Best {
+		for _, num := range game.Best {
 			if num == numPlayers {
 				bestGames = append(bestGames, game)
 			} else if num > numPlayers {
