@@ -26,7 +26,7 @@ import (
 func init() {
 	http.HandleFunc("/", home)
 	http.HandleFunc("/list", getCollection)
-	http.HandleFunc("/loadgame", loadGame)
+	http.Handle("/loadgame", wrapper(loadGame, "gameID"))
 	http.HandleFunc("/watchprogress", watchProgress)
 	http.HandleFunc("/suggestedgames", suggestedGames)
 	http.HandleFunc("/logs", displayLogs)
@@ -91,6 +91,19 @@ type Game struct {
 	BScore     float64
 	Ratings    int
 	FetchTime  time.Time `xml:"-"`
+}
+
+func wrapper(h http.HandlerFunc, params ...string) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		for _, param := range params {
+			if len(q.Get(param)) == 0 {
+				http.Error(w, "missing "+param, http.StatusBadRequest)
+				return
+			}
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func home(w http.ResponseWriter, r *http.Request) {
@@ -367,57 +380,55 @@ func suggestedGames(w http.ResponseWriter, r *http.Request) {
 	}
 	bggName := r.FormValue("bggName")
 
-	bestQuery := datastore.NewQuery("Game").Filter("Best =", numPlayers)
-	recQuery := datastore.NewQuery("Game").Filter("Rec =", numPlayers)
-
-	var best []Game
-	_, err = bestQuery.GetAll(ctx, &best)
+	collKey := datastore.NewKey(ctx, "Collection", bggName, 0, nil)
+	var coll Collection
+	err = datastore.Get(ctx, collKey, &coll)
 	if err != nil {
-		log.Errorf(ctx, "Failed to query games: %s", err)
-		http.Error(w, "Internal error, please try again", http.StatusInternalServerError)
+		log.Errorf(ctx, "Failed to pull collection: %s", err)
+		http.Error(w, "Please enter a valid Collection name", http.StatusBadRequest)
+		return
+	}
+	var gameKeys []*datastore.Key
+
+	for _, gameID := range coll.Items {
+		gameKeys = append(gameKeys, datastore.NewKey(ctx, "Game", gameID.ObjectID, 0, nil))
+	}
+
+	var games = make([]*Game, len(gameKeys))
+	err = datastore.GetMulti(ctx, gameKeys, games)
+	if err != nil {
+		log.Errorf(ctx, "Failed to pull games: %s", err)
+		http.Error(w, "Sorry something went wrong fetching games", http.StatusInternalServerError)
 		return
 	}
 
-	var rec []Game
-	_, err = recQuery.GetAll(ctx, &rec)
-	if err != nil {
-		log.Errorf(ctx, "Failed to query games: %s", err)
-		http.Error(w, "Internal error, please try again", http.StatusInternalServerError)
-		return
+	var bestGames []*Game
+	var recGames []*Game
+
+	for _, game := range games {
+		for num := range game.Rec {
+			if num == numPlayers {
+				recGames = append(recGames, game)
+			} else if num > numPlayers {
+				break
+			}
+		}
+		for num := range game.Best {
+			if num == numPlayers {
+				bestGames = append(bestGames, game)
+			} else if num > numPlayers {
+				break
+			}
+		}
 	}
-
-	pretty.Fprint(w, best)
-	pretty.Fprint(w, rec)
-	_ = bggName
-	/*
-		collQuery := datastore.NewQuery("Collection").Filter("__key__ =", bggName)
-		var coll []Collection
-		_, err = collQuery.GetAll(ctx, coll)
-		if err != nil {
-			log.Errorf(ctx, "Failed to pull collection: %s", err)
-			http.Error(w, "Please enter a valid Collection name", http.StatusBadRequest)
-			return
-		}
-		var gameKeys []*datastore.Key
-
-		for _, gameID := range coll[0].Items {
-			gameKeys = append(gameKeys, datastore.NewKey(ctx, "Game", gameID.ObjectID, 0, nil))
-		}
-
-		var games = make([]*Game, len(coll.Items))
-		err = datastore.GetMulti(ctx, gameKeys, games)
-		if err != nil {
-			log.Errorf(ctx, "Failed to pull games: %s", err)
-			http.Error(w, "Sorry something went wrong fetching games", http.StatusInternalServerError)
-			return
-		}
-
-		var bestGames []Game
-		var recGames  []Game
-
-		for _, game := range game {
-			if game.Rec
-		} */
+	fmt.Fprintln(w, "Best games")
+	for _, game := range bestGames {
+		fmt.Fprintln(w, game.Name)
+	}
+	fmt.Fprintln(w, "\nRec games")
+	for _, game := range recGames {
+		fmt.Fprintln(w, game.Name)
+	}
 }
 
 const recordsPerPage = 10
