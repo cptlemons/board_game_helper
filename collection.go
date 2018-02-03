@@ -26,7 +26,7 @@ import (
 func init() {
 	http.HandleFunc("/", home)
 	http.HandleFunc("/list", getCollection)
-	http.Handle("/loadgame", wrapper(loadGame, "gameID"))
+	http.HandleFunc("/loadgame", loadGame)
 	http.HandleFunc("/watchprogress", watchProgress)
 	http.HandleFunc("/suggestedgames", suggestedGames)
 	http.HandleFunc("/logs", displayLogs)
@@ -421,11 +421,12 @@ func suggestedGames(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	fmt.Fprintln(w, "Best games")
+	fmt.Fprintf(w, "For %d players\n", numPlayers)
+	fmt.Fprintln(w, "Best games:")
 	for _, game := range bestGames {
 		fmt.Fprintln(w, game.Name)
 	}
-	fmt.Fprintln(w, "\nRec games")
+	fmt.Fprintln(w, "\nRec games:")
 	for _, game := range recGames {
 		fmt.Fprintln(w, game.Name)
 	}
