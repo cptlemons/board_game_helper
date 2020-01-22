@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" class="h-100">
+<head>
+<title>BGG Helper</title>
+<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+<script src="https://code.jquery.com/jquery-3.4.1.slim.min.js" integrity="sha384-J6qa4849blE2+poT4WnyKhv5vZF5SrPo0iEjwBvKU7imGFAV0wwj1yYfoRSJoZ+n" crossorigin="anonymous"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js" integrity="sha384-wfSDF2E50Y2D1uUdj0O3uMBJnjuUD4Ih7YwaYd1iqfktj0Uod8GCExl3Og8ifwB6" crossorigin="anonymous"></script>
+<script src="https://cdn.datatables.net/1.10.20/js/jquery.dataTables.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.datatables.net/1.10.20/js/dataTables.bootstrap4.min.js" crossorigin="anonymous"></script>
+<link href="sticky-footer.css" rel="stylesheet">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+.footer {
+  background-color: #f5f5f5;
+}
+.navbar {
+    background-color: #7ce0f9;
+}
+</style>
+</head>
+<body class="d-flex flex-column h-100">
+    <nav class="navbar navbar-dark bg-dark navbar-expand-lg mb-4">
+        <div class="container">
+            <a href="/" class="navbar-brand mb-0 h1">BGG Helper</a>
+        </div>
+    </nav>
+    <div class="container">
+        <h1>Results</h1>
+        <footer class="blockquote-footer">BGG Name: <cite title="Source Title">{{ .BGGName }}</cite></footer>
+        <footer class="blockquote-footer mb-2">Numer of Players: <cite title="Source Title">{{ .NumPlayers }}</cite></footer>
+        <h2 class="text-center">Games voted "Best" at {{ .NumPlayers }} players</h2>
+        <table class="table sortable-table table-striped table-bordered table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Min Players</th>
+                    <th scope="col">Max Players</th>
+                    <th scope="col">Score</th>
+                    <th scope="col">BScore</th>
+                    <th scope="col">Weight</th>
+                    <th scope="col"># votes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{ range .Games }}
+                    {{ if .Best  }}
+                        <tr>
+                            <th scope="row">{{ .Name }}</th>
+                            <td>{{ .MinPlayers }}</td>
+                            <td>{{ .MaxPlayers }}</td>
+                            <td>{{ .Score }}</td>
+                            <td>{{ .BScore }}</td>
+                            <td>{{ .Weight }}</td>
+                            <td>{{ .Ratings }}</td>
+                        </tr>
+                    {{ end }}
+                {{ end }}
+            </tbody>
+        </table>
+        <h2 class="text-center">Games voted "Recommended" at {{ .NumPlayers }} players</h2>
+        <table class="table sortable-table table-striped table-bordered table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Min Players</th>
+                    <th scope="col">Max Players</th>
+                    <th scope="col">Score</th>
+                    <th scope="col">BScore</th>
+                    <th scope="col">Weight</th>
+                    <th scope="col"># votes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{ range .Games }}
+                    {{ if .Rec  }}
+                        <tr>
+                            <th scope="row">{{ .Name }}</th>
+                            <td>{{ .MinPlayers }}</td>
+                            <td>{{ .MaxPlayers }}</td>
+                            <td>{{ .Score }}</td>
+                            <td>{{ .BScore }}</td>
+                            <td>{{ .Weight }}</td>
+                            <td>{{ .Ratings }}</td>
+                        </tr>
+                    {{ end }}
+                {{ end }}
+            </tbody>
+        </table>
+    </div>
+    <footer class="footer mt-auto py-3">
+        <div class="container">
+            <span class="text-muted">Developed by <a href="https://boardgamegeek.com/user/CPT_Lemons">CPT_Lemons</a></span>
+        </div>
+    </footer>
+<script>
+$(document).ready(function () {
+    $('.sortable-table').DataTable({
+        "order": [[ 3, "desc" ]],
+        "paging": false,
+        "searching": false,
+        "info": false,
+    });
+});
+</script>
+</body>
+</html>
