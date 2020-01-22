@@ -164,6 +164,18 @@ retry:
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Too many requests and unable to read collection body: %s", err)
+		}
+		for k, v := range resp.Header {
+			log.Printf("%s : %q", k, v)
+		}
+		log.Printf("Too many request to collection body:\n%q", body)
+		return nil, fmt.Errorf("Too many requests, see logs for timeout information")
+	}
+
 	if resp.StatusCode == http.StatusAccepted {
 		log.Printf("BGG request accepted, waiting for body")
 		time.Sleep(10 * time.Second)
@@ -220,6 +232,18 @@ func fetchGame(client *http.Client, gameID string, numPlayers int) (*game, error
 		return nil, fmt.Errorf("error fetching game xml: %s", err)
 	}
 	defer xresp.Body.Close()
+
+	if xresp.StatusCode == http.StatusTooManyRequests {
+		body, err := ioutil.ReadAll(xresp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Too many requests and unable to read body: %s", err)
+		}
+		for k, v := range xresp.Header {
+			log.Printf("%s : %q", k, v)
+		}
+		log.Printf("Too many request body:\n%q", body)
+		return nil, fmt.Errorf("Too many requests, see logs for timeout information")
+	}
 
 	if xresp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("Bad status code fetching game xml: %s", xresp.Status)
